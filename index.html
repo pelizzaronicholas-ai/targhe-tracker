@@ -16,6 +16,7 @@
   body{
     margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     background:var(--bg); color:var(--text); padding-bottom:90px;
+    overflow-x:hidden; /* rete di sicurezza: nessun elemento (incluso il date picker nativo iOS) puo' sfondare la larghezza */
   }
   header{
     position:sticky; top:0; z-index:10; background:var(--bg);
@@ -45,12 +46,16 @@
      e affiancato ad altri campi può sovrapporsi */
   .row-stack{flex-direction:column; align-items:stretch;}
   .row-stack .field{width:100%;}
-  input[type="date"]{min-width:0;}
+  input[type="date"]{min-width:0; max-width:100%;}
   input, textarea, select{
     background:var(--card2); border:1px solid var(--border); color:var(--text);
-    border-radius:8px; padding:10px; font-size:15px; width:100%;
+    border-radius:8px; padding:10px; font-size:16px; width:100%; max-width:100%;
+    /* font-size 16px: sotto questa soglia Safari iOS fa uno zoom automatico al tocco del
+       campo, che sposta/"spinge fuori schermo" il resto del layout */
   }
   input:focus, textarea:focus{outline:1px solid var(--accent);}
+  /* avviso non bloccante: formato targa/telaio diverso dallo standard italiano */
+  input.input-warn{border-color:var(--warn); background:rgba(245,158,11,.08);}
   label{font-size:12px; color:var(--muted); display:block; margin-bottom:4px;}
   .field{flex:1; min-width:120px;}
   button{
@@ -197,17 +202,6 @@
     <button class="btn-accent" id="aggiungiBtn" style="width:100%; margin-top:12px;">+ Aggiungi vettura</button>
   </div>
 
-  <div class="card" style="margin-top:10px;">
-    <label>Foto elenco (più targhe insieme)</label>
-    <div class="thumb-input">
-      <label class="btn-ghost btn-sm" style="display:inline-block;">
-        📋 Foto elenco
-        <input type="file" id="fotoElencoInput" accept="image/*" capture="environment" style="display:none;">
-      </label>
-    </div>
-    <small class="hint" id="ocrElencoStatus">Fotografa il foglio/elenco con più targhe: le riconosce tutte e crea una vettura per ciascuna (stato "Non lavorata").</small>
-  </div>
-
   <div class="stats" id="stats"></div>
   <div class="legend">
     <span><i class="dot dot-todo"></i> Non lavorata</span>
@@ -348,25 +342,38 @@ async function ocrImage(dataUrl, statusEl){
 }
 
 // targa italiana standard: 2 lettere + 3 numeri + 2 lettere (es. AB123CD)
+// validazione "morbida" del formato: serve solo ad avvisare, non blocca mai il salvataggio
+// (targhe estere, telai parziali o formati vecchi restano comunque inseribili)
+function formatoTargaOk(targa){
+  return /^[A-Z]{2}\d{3}[A-Z]{2}$/.test(targa);
+}
+function formatoTelaioOk(telaio){
+  return /^[A-HJ-NPR-Z0-9]{17}$/.test(telaio); // VIN: 17 caratteri, esclude I O Q
+}
+// aggiorna bordo + messaggio di avviso su un campo, senza toccare eventuali messaggi OCR in corso
+function segnalaFormato(inputEl, statusEl, validaFn, nomeCampo){
+  const val = inputEl.value.trim().toUpperCase();
+  if(!val){
+    inputEl.classList.remove('input-warn');
+    if(statusEl.dataset.origine === 'formato') statusEl.textContent = '';
+    return;
+  }
+  const ok = validaFn(val);
+  inputEl.classList.toggle('input-warn', !ok);
+  if(!ok){
+    statusEl.textContent = `⚠️ formato ${nomeCampo} non standard: verifica`;
+    statusEl.dataset.origine = 'formato';
+  } else if(statusEl.dataset.origine === 'formato'){
+    statusEl.textContent = '';
+    delete statusEl.dataset.origine;
+  }
+}
+
 function estraiTarga(testo){
   const clean = testo.toUpperCase().replace(/[^A-Z0-9]/g,'');
   const m = clean.match(/[A-Z]{2}\d{3}[A-Z]{2}/);
   if(m) return m[0];
   return clean.slice(0,10); // nessun match sicuro: grezzo, da correggere a mano
-}
-
-// come sopra, ma trova le targhe in un elenco/foglio con più vetture: analizza RIGA per RIGA
-// (invece di unire tutto il testo) per evitare falsi positivi da caratteri di righe diverse
-// che per caso si concatenano nel pattern giusto
-function estraiTargheMultiple(testo){
-  const righe = testo.split(/\r?\n/);
-  const trovate = [];
-  righe.forEach(riga=>{
-    const clean = riga.toUpperCase().replace(/[^A-Z0-9]/g,'');
-    const m = clean.match(/[A-Z]{2}\d{3}[A-Z]{2}/);
-    if(m) trovate.push(m[0]);
-  });
-  return [...new Set(trovate)]; // rimuove eventuali doppioni
 }
 
 // telaio/VIN: 17 caratteri alfanumerici, escluse I O Q per spec
@@ -519,10 +526,15 @@ document.getElementById('fotoTargaInput').addEventListener('change', (e)=>{
     const statusEl = document.getElementById('ocrTargaStatus');
     const testo = await ocrImage(base64, statusEl);
     if(testo){
-      document.getElementById('targaInput').value = estraiTarga(testo);
-      statusEl.textContent = '✅ auto-riconosciuta: verifica prima di salvare';
+      const targaInput = document.getElementById('targaInput');
+      targaInput.value = estraiTarga(testo);
+      segnalaFormato(targaInput, statusEl, formatoTargaOk, 'targa');
+      if(!statusEl.textContent) statusEl.textContent = '✅ auto-riconosciuta: verifica prima di salvare';
     }
   });
+});
+document.getElementById('targaInput').addEventListener('input', (e)=>{
+  segnalaFormato(e.target, document.getElementById('ocrTargaStatus'), formatoTargaOk, 'targa');
 });
 document.getElementById('rimuoviFotoTargaBtn').addEventListener('click', ()=>{
   fotoTargaBase64 = null;
@@ -543,10 +555,15 @@ document.getElementById('fotoTelaioInput').addEventListener('change', (e)=>{
     const statusEl = document.getElementById('ocrTelaioStatus');
     const testo = await ocrImage(base64, statusEl);
     if(testo){
-      document.getElementById('telaioInput').value = estraiTelaio(testo);
-      statusEl.textContent = '✅ auto-riconosciuto: verifica prima di salvare';
+      const telaioInput = document.getElementById('telaioInput');
+      telaioInput.value = estraiTelaio(testo);
+      segnalaFormato(telaioInput, statusEl, formatoTelaioOk, 'telaio');
+      if(!statusEl.textContent) statusEl.textContent = '✅ auto-riconosciuto: verifica prima di salvare';
     }
   });
+});
+document.getElementById('telaioInput').addEventListener('input', (e)=>{
+  segnalaFormato(e.target, document.getElementById('ocrTelaioStatus'), formatoTelaioOk, 'telaio');
 });
 document.getElementById('rimuoviFotoTelaioBtn').addEventListener('click', ()=>{
   fotoTelaioBase64 = null;
@@ -554,36 +571,6 @@ document.getElementById('rimuoviFotoTelaioBtn').addEventListener('click', ()=>{
   document.getElementById('fotoTelaioPreviewWrap').style.display = 'none';
   document.getElementById('rimuoviFotoTelaioBtn').style.display = 'none';
   document.getElementById('ocrTelaioStatus').textContent = '';
-});
-
-// foto di un elenco/foglio con più targhe: le riconosce tutte e crea una vettura per ciascuna
-document.getElementById('fotoElencoInput').addEventListener('change', (e)=>{
-  const f = e.target.files[0];
-  if(!f) return;
-  const statusEl = document.getElementById('ocrElencoStatus');
-  comprimiFoto(f, async (base64)=>{
-    const testo = await ocrImage(base64, statusEl);
-    document.getElementById('fotoElencoInput').value = '';
-    if(!testo){
-      statusEl.textContent = '⚠️ OCR non riuscito: aggiungi le vetture a mano.';
-      return;
-    }
-    const targhe = estraiTargheMultiple(testo);
-    if(targhe.length === 0){
-      statusEl.textContent = '⚠️ Nessuna targa riconosciuta nella foto. Riprova con più luce/a fuoco, o inserisci a mano.';
-      return;
-    }
-    const list = currentList();
-    targhe.forEach(targa=>{
-      list.entries.push({
-        id: uid(), targa, telaio:'', note:'', stato:'da_fare',
-        fotoTarga: null, fotoTelaio: null, ts: new Date().toISOString()
-      });
-    });
-    saveData(data);
-    statusEl.textContent = `✅ Aggiunte ${targhe.length} vetture: ${targhe.join(', ')}. Verifica e correggi eventuali errori di lettura.`;
-    render();
-  });
 });
 
 document.getElementById('aggiungiBtn').addEventListener('click', ()=>{
@@ -615,6 +602,8 @@ document.getElementById('aggiungiBtn').addEventListener('click', ()=>{
   document.getElementById('rimuoviFotoTelaioBtn').style.display = 'none';
   document.getElementById('ocrTargaStatus').textContent = '';
   document.getElementById('ocrTelaioStatus').textContent = '';
+  document.getElementById('targaInput').classList.remove('input-warn');
+  document.getElementById('telaioInput').classList.remove('input-warn');
   document.getElementById('targaInput').focus();
 
   render();

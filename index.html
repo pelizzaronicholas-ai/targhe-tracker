@@ -417,21 +417,36 @@ function calcolaStats(list){
   return { tot, fatte, parziali, nonPres, daFare };
 }
 
-// comprime la foto lato client per non riempire il localStorage
-function comprimiFoto(file, cb){
+// comprime la foto lato client per non riempire il localStorage.
+// Usa createImageBitmap con imageOrientation:'from-image' quando disponibile: rispetta sempre
+// la rotazione EXIF della foto (fondamentale su Android, dove il canvas altrimenti ignora la
+// rotazione e l'immagine arriva storta all'OCR, con letture sbagliate o mancate).
+async function comprimiFoto(file, cb){
+  const disegnaSuCanvas = (sorgente, w, h) => {
+    const maxW = 640;
+    const scale = Math.min(1, maxW / w);
+    const canvas = document.createElement('canvas');
+    canvas.width = w * scale;
+    canvas.height = h * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(sorgente, 0, 0, canvas.width, canvas.height);
+    cb(canvas.toDataURL('image/jpeg', 0.55));
+  };
+
+  if(window.createImageBitmap){
+    try{
+      const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+      disegnaSuCanvas(bitmap, bitmap.width, bitmap.height);
+      return;
+    }catch(err){
+      // se il browser non supporta l'opzione o fallisce, prosegue con il metodo alternativo sotto
+    }
+  }
+
   const reader = new FileReader();
   reader.onload = function(e){
     const img = new Image();
-    img.onload = function(){
-      const maxW = 640;
-      const scale = Math.min(1, maxW / img.width);
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width * scale;
-      canvas.height = img.height * scale;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      cb(canvas.toDataURL('image/jpeg', 0.55));
-    };
+    img.onload = function(){ disegnaSuCanvas(img, img.width, img.height); };
     img.src = e.target.result;
   };
   reader.readAsDataURL(file);

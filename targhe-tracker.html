@@ -71,6 +71,7 @@
   .vcard{display:flex; gap:10px; align-items:flex-start;}
   .vcard img{width:56px; height:56px; object-fit:cover; border-radius:8px; border:1px solid var(--border);}
   .vinfo{flex:1; min-width:0;}
+  .vtop{display:flex; align-items:flex-start; justify-content:space-between; gap:10px;}
   .vtarga{font-size:16px; font-weight:700; letter-spacing:0.5px;}
   .vmeta{font-size:12px; color:var(--muted); margin-top:2px;}
   .vnote{font-size:13px; margin-top:4px; color:#c7cbd4;}
@@ -100,7 +101,7 @@
   .modal h2{margin-top:0; font-size:16px;}
   .close-x{float:right; background:none; color:var(--muted); padding:4px 8px;}
   .empty{text-align:center; color:var(--muted); padding:30px 10px; font-size:14px;}
-  .stato-squares{display:flex; gap:5px; margin-top:8px;}
+  .stato-squares{display:flex; gap:5px; margin-top:2px; flex-shrink:0;}
   .stato-sq{
     width:28px; height:28px; border-radius:7px; border:2px solid transparent;
     display:flex; align-items:center; justify-content:center;
@@ -272,6 +273,9 @@ let fotoTelaioBase64 = null;
 
 // ---------- OCR (Tesseract.js, caricato da CDN solo al primo uso) ----------
 let tesseractLoading = null;
+let tesseractWorker = null;
+let ocrStatusEl = null; // riferimento all'elemento di stato corrente, usato dal logger del worker
+
 function ensureTesseract(){
   if(window.Tesseract) return Promise.resolve(true);
   if(tesseractLoading) return tesseractLoading;
@@ -285,23 +289,40 @@ function ensureTesseract(){
   return tesseractLoading;
 }
 
+// worker riutilizzato tra le foto (evita di ricaricare il motore ogni volta) con parametri
+// ottimizzati per targhe/telai: solo caratteri alfanumerici e layout "blocco di testo uniforme",
+// molto più precisi del riconoscimento generico usato prima
+async function getTesseractWorker(){
+  const ok = await ensureTesseract();
+  if(!ok || !window.Tesseract) return null;
+  if(!tesseractWorker){
+    tesseractWorker = await Tesseract.createWorker('eng', 1, {
+      logger: m=>{
+        if(m.status === 'recognizing text' && ocrStatusEl){
+          ocrStatusEl.textContent = `🔍 riconoscimento... ${Math.round((m.progress||0)*100)}%`;
+        }
+      }
+    });
+    await tesseractWorker.setParameters({
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+      tessedit_pageseg_mode: '6'
+    });
+  }
+  return tesseractWorker;
+}
+
 async function ocrImage(dataUrl, statusEl){
   statusEl.textContent = '🔍 carico motore OCR...';
-  const ok = await ensureTesseract();
-  if(!ok || !window.Tesseract){
+  ocrStatusEl = statusEl;
+  const worker = await getTesseractWorker();
+  if(!worker){
     statusEl.textContent = '⚠️ nessuna connessione: inserisci manualmente';
     return null;
   }
   try{
-    const result = await Tesseract.recognize(dataUrl, 'eng', {
-      logger: m=>{
-        if(m.status === 'recognizing text'){
-          statusEl.textContent = `🔍 riconoscimento... ${Math.round((m.progress||0)*100)}%`;
-        }
-      }
-    });
+    const { data: { text } } = await worker.recognize(dataUrl);
     statusEl.textContent = '';
-    return result.data.text || '';
+    return text || '';
   }catch(err){
     statusEl.textContent = '⚠️ OCR fallito: inserisci manualmente';
     return null;
@@ -316,11 +337,18 @@ function estraiTarga(testo){
   return clean.slice(0,10); // nessun match sicuro: grezzo, da correggere a mano
 }
 
-// come sopra, ma trova TUTTE le targhe presenti nel testo (foto di un elenco/foglio con più vetture)
+// come sopra, ma trova le targhe in un elenco/foglio con più vetture: analizza RIGA per RIGA
+// (invece di unire tutto il testo) per evitare falsi positivi da caratteri di righe diverse
+// che per caso si concatenano nel pattern giusto
 function estraiTargheMultiple(testo){
-  const clean = testo.toUpperCase().replace(/[^A-Z0-9]/g,'');
-  const matches = clean.match(/[A-Z]{2}\d{3}[A-Z]{2}/g) || [];
-  return [...new Set(matches)]; // rimuove eventuali doppioni
+  const righe = testo.split(/\r?\n/);
+  const trovate = [];
+  righe.forEach(riga=>{
+    const clean = riga.toUpperCase().replace(/[^A-Z0-9]/g,'');
+    const m = clean.match(/[A-Z]{2}\d{3}[A-Z]{2}/);
+    if(m) trovate.push(m[0]);
+  });
+  return [...new Set(trovate)]; // rimuove eventuali doppioni
 }
 
 // telaio/VIN: 17 caratteri alfanumerici, escluse I O Q per spec
@@ -413,22 +441,27 @@ function render(){
     wrap.innerHTML = '<div class="empty">Nessuna vettura registrata per questa giornata.<br>Aggiungine una qui sopra 👆</div>';
     return;
   }
-  wrap.innerHTML = list.entries.slice().reverse().map(e => `
+  wrap.innerHTML = list.entries.map(e => `
     <div class="card vcard">
+      ${(e.fotoTarga || e.fotoTelaio) ? `
       <div style="display:flex; flex-direction:column; gap:4px;">
         ${e.fotoTarga ? `<img src="${e.fotoTarga}" title="foto targa">` : ''}
         ${e.fotoTelaio ? `<img src="${e.fotoTelaio}" title="foto telaio">` : ''}
-      </div>
+      </div>` : ''}
       <div class="vinfo">
-        <div class="vtarga">${escapeHtml(e.targa || '(senza targa)')}</div>
-        ${e.telaio ? `<div class="vmeta">Telaio: ${escapeHtml(e.telaio)}</div>` : ''}
-        ${e.note ? `<div class="vnote">${escapeHtml(e.note)}</div>` : ''}
-        <div class="stato-corrente">${statoLabel(e.stato)}</div>
-        <div class="stato-squares">
-          ${Object.keys(STATI).map(s => `
-            <div class="stato-sq${e.stato===s?' active':''}" data-s="${s}" data-id="${e.id}" title="${STATI[s].testo}">${STATI[s].sigla}</div>
-          `).join('')}
+        <div class="vtop">
+          <div>
+            <div class="vtarga">${escapeHtml(e.targa || '(senza targa)')}</div>
+            <div class="stato-corrente">${statoLabel(e.stato)}</div>
+          </div>
+          <div class="stato-squares">
+            ${Object.keys(STATI).map(s => `
+              <div class="stato-sq${e.stato===s?' active':''}" data-s="${s}" data-id="${e.id}" title="${STATI[s].testo}">${STATI[s].sigla}</div>
+            `).join('')}
+          </div>
         </div>
+        ${e.telaio ? `<div class="vmeta">Telaio: ${escapeHtml(e.telaio)}</div>` : ''}
+        ${e.note ? `<div class="vnote">${e.stato==='parziale' ? '⏳ Manca: ' : ''}${escapeHtml(e.note)}</div>` : ''}
         <div class="vactions">
           <button class="btn-ghost btn-sm" data-del="${e.id}">🗑 Elimina</button>
         </div>
@@ -571,6 +604,11 @@ document.getElementById('lista').addEventListener('click', (e)=>{
   if(setId && setStato){
     const entry = list.entries.find(x=>x.id===setId);
     entry.stato = setStato;
+    // se marcata come "lavorata parziale" chiede subito cosa manca, per averlo nel report
+    if(setStato === 'parziale'){
+      const nota = prompt('Cosa manca per completare?', entry.note || '');
+      if(nota !== null) entry.note = nota.trim();
+    }
     saveData(data);
     render();
   }
@@ -735,8 +773,14 @@ Riepilogo:
 - Mezzo assente: ${nonPres}
 - Non lavorate: ${daFare}
 
-Elenco targhe:
-${list.entries.map(e=>`- ${e.targa||'(senza targa)'} — ${statoTesto(e.stato)}${e.note? ' — '+e.note : ''}`).join('\n') || '(nessuna vettura registrata)'}
+Elenco targhe (dettaglio completo nel CSV allegato):
+${(()=>{
+  const MAX = 12; // limite righe nel corpo: un elenco troppo lungo rompe il link mailto su alcuni telefoni
+  const righeEl = list.entries.map(e=>`- ${e.targa||'(senza targa)'} — ${statoTesto(e.stato)}${e.note? ' — '+e.note : ''}`);
+  if(righeEl.length === 0) return '(nessuna vettura registrata)';
+  if(righeEl.length > MAX) return righeEl.slice(0,MAX).join('\n') + `\n... e altre ${righeEl.length-MAX} (vedi CSV allegato)`;
+  return righeEl.join('\n');
+})()}
 
 Cordiali saluti`;
 
@@ -755,7 +799,11 @@ document.getElementById('apriMailBtn').addEventListener('click', ()=>{
   const to = encodeURIComponent(document.getElementById('destEmail').value.trim());
   const subj = encodeURIComponent(document.getElementById('oggettoEmail').value);
   const body = encodeURIComponent(document.getElementById('corpoEmail').value);
-  window.location.href = `mailto:${to}?subject=${subj}&body=${body}`;
+  // ritardo tra il download del CSV e l'apertura del link mailto: farli nello stesso istante
+  // su alcuni browser mobile (Safari/iOS) fa "perdere" il secondo comando
+  setTimeout(()=>{
+    window.location.href = `mailto:${to}?subject=${subj}&body=${body}`;
+  }, 400);
 });
 
 document.getElementById('condividiBtn').addEventListener('click', async ()=>{

@@ -621,7 +621,10 @@ document.getElementById('lista').addEventListener('click', (e)=>{
   }
 });
 
-// ---------- Storico ----------
+// ---------- Storico / archivio report ----------
+// tutte le giornate restano salvate per sempre sul dispositivo (localStorage), anche chiudendo
+// l'app: questa finestra serve solo a consultarle e a riaprire il PDF senza dover rientrare
+// a modificare la giornata
 document.getElementById('storicoBtn').addEventListener('click', ()=>{
   const dates = Object.keys(data).sort().reverse();
   const wrap = document.getElementById('storicoLista');
@@ -630,21 +633,32 @@ document.getElementById('storicoBtn').addEventListener('click', ()=>{
   } else {
     wrap.innerHTML = dates.map(d=>{
       const l = data[d];
-      return `<div class="card row" style="justify-content:space-between; cursor:pointer;" data-goto="${d}">
-        <div>
-          <b>${d}</b><br>
-          <span class="vmeta">${escapeHtml(l.cliente||'—')} · ${l.entries.length} vetture</span>
+      const { tot, fatte, parziali, nonPres, daFare } = calcolaStats(l);
+      return `<div class="card">
+        <div class="row" style="justify-content:space-between; align-items:flex-start;">
+          <div data-goto="${d}" style="cursor:pointer; flex:1;">
+            <b>${d}</b><br>
+            <span class="vmeta">${escapeHtml(l.cliente||'—')} · ${tot} vetture</span>
+          </div>
+          <button class="btn-ghost btn-sm" data-pdf="${d}">📄 PDF</button>
         </div>
-        <span>➡️</span>
+        <div class="vmeta" style="margin-top:8px;">
+          ✅ ${fatte} lavorate · 🟣 ${parziali} parziali · ⚠️ ${nonPres} assenti · 🔴 ${daFare} da fare
+        </div>
       </div>`;
     }).join('');
   }
   document.getElementById('storicoModal').classList.add('open');
 });
 document.getElementById('storicoLista').addEventListener('click', (e)=>{
-  const target = e.target.closest('[data-goto]');
-  if(target){
-    document.getElementById('dataGiorno').value = target.dataset.goto;
+  const pdfDate = e.target.closest('[data-pdf]')?.dataset.pdf;
+  if(pdfDate){
+    apriReportStampa(pdfDate, data[pdfDate]);
+    return;
+  }
+  const gotoDate = e.target.closest('[data-goto]')?.dataset.goto;
+  if(gotoDate){
+    document.getElementById('dataGiorno').value = gotoDate;
     render();
     document.getElementById('storicoModal').classList.remove('open');
   }
@@ -737,9 +751,8 @@ function generaReportStampa(dt, list){
 </body></html>`;
 }
 
-document.getElementById('pdfBtn').addEventListener('click', ()=>{
-  const dt = currentDate();
-  const list = currentList();
+// apre in una nuova scheda il report stampabile di una giornata (oggi o passata, dallo storico)
+function apriReportStampa(dt, list){
   const html = generaReportStampa(dt, list);
   const w = window.open('', '_blank');
   if(!w){
@@ -751,6 +764,10 @@ document.getElementById('pdfBtn').addEventListener('click', ()=>{
   w.document.close();
   // piccolo ritardo per far renderizzare la pagina prima di aprire la finestra di stampa
   setTimeout(()=>{ w.focus(); w.print(); }, 350);
+}
+
+document.getElementById('pdfBtn').addEventListener('click', ()=>{
+  apriReportStampa(currentDate(), currentList());
 });
 
 // ---------- Modal email ----------

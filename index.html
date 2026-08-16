@@ -100,9 +100,18 @@
   .modal h2{margin-top:0; font-size:16px;}
   .close-x{float:right; background:none; color:var(--muted); padding:4px 8px;}
   .empty{text-align:center; color:var(--muted); padding:30px 10px; font-size:14px;}
-  .status-form{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;}
-  .status-form button{flex:1 1 45%; padding:8px; font-size:12px;}
-  .status-form button.sel{outline:2px solid #fff;}
+  .stato-squares{display:flex; gap:5px; margin-top:8px;}
+  .stato-sq{
+    width:28px; height:28px; border-radius:7px; border:2px solid transparent;
+    display:flex; align-items:center; justify-content:center;
+    font-size:12px; font-weight:800; color:#fff; cursor:pointer; opacity:.32;
+  }
+  .stato-sq.active{opacity:1; border-color:#fff;}
+  .stato-sq[data-s="da_fare"]{background:var(--todo);}
+  .stato-sq[data-s="fatto"]{background:var(--ok);}
+  .stato-sq[data-s="parziale"]{background:var(--partial);}
+  .stato-sq[data-s="non_presente"]{background:var(--warn);}
+  .stato-corrente{font-size:12px; color:var(--muted); margin-top:2px;}
   .thumb-input{display:flex; gap:8px; align-items:center;}
   .thumb-input img{width:44px;height:44px;object-fit:cover;border-radius:6px;}
   small.hint{color:var(--muted); font-size:11px; display:block; margin-top:4px;}
@@ -179,17 +188,18 @@
       </div>
     </div>
 
-    <div style="margin-top:10px;">
-      <label>Stato iniziale</label>
-      <div class="status-form">
-        <button type="button" class="btn-todo sel" data-stato="da_fare">🔴 Non lavorata</button>
-        <button type="button" class="btn-ok" data-stato="fatto">✅ Lavorata</button>
-        <button type="button" class="btn-partial" data-stato="parziale">🟣 Lavorata parziale</button>
-        <button type="button" class="btn-warn" data-stato="non_presente">⚠️ Mezzo assente</button>
-      </div>
-    </div>
-
     <button class="btn-accent" id="aggiungiBtn" style="width:100%; margin-top:12px;">+ Aggiungi vettura</button>
+  </div>
+
+  <div class="card" style="margin-top:10px;">
+    <label>Foto elenco (più targhe insieme)</label>
+    <div class="thumb-input">
+      <label class="btn-ghost btn-sm" style="display:inline-block;">
+        📋 Foto elenco
+        <input type="file" id="fotoElencoInput" accept="image/*" capture="environment" style="display:none;">
+      </label>
+    </div>
+    <small class="hint" id="ocrElencoStatus">Fotografa il foglio/elenco con più targhe: le riconosce tutte e crea una vettura per ciascuna (stato "Non lavorata").</small>
   </div>
 
   <div class="stats" id="stats"></div>
@@ -198,7 +208,7 @@
     <span><i class="dot dot-ok"></i> Lavorata</span>
     <span><i class="dot dot-partial"></i> Lavorata parziale</span>
     <span><i class="dot dot-warn"></i> Mezzo assente</span>
-    <span>· tocca il pallino su una vettura per cambiare stato</span>
+    <span>· legenda colori — tocca il quadrato sulla vettura per impostare lo stato</span>
   </div>
 
   <div class="section-title" id="listaTitle">Vetture di oggi</div>
@@ -257,7 +267,6 @@ function saveSettings(s){ localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
 
 let data = loadData();
 let settings = loadSettings();
-let statoScelto = 'da_fare';
 let fotoTargaBase64 = null;
 let fotoTelaioBase64 = null;
 
@@ -307,6 +316,13 @@ function estraiTarga(testo){
   return clean.slice(0,10); // nessun match sicuro: grezzo, da correggere a mano
 }
 
+// come sopra, ma trova TUTTE le targhe presenti nel testo (foto di un elenco/foglio con più vetture)
+function estraiTargheMultiple(testo){
+  const clean = testo.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const matches = clean.match(/[A-Z]{2}\d{3}[A-Z]{2}/g) || [];
+  return [...new Set(matches)]; // rimuove eventuali doppioni
+}
+
 // telaio/VIN: 17 caratteri alfanumerici, escluse I O Q per spec
 function estraiTelaio(testo){
   const clean = testo.toUpperCase().replace(/[^A-Z0-9]/g,'');
@@ -330,10 +346,10 @@ function currentList(){
   return data[dt];
 }
 const STATI = {
-  da_fare:      { testo: 'Non lavorata',        emoji: '🔴' },
-  fatto:        { testo: 'Lavorata',             emoji: '✅' },
-  parziale:     { testo: 'Lavorata parziale',    emoji: '🟣' },
-  non_presente: { testo: 'Mezzo assente',        emoji: '⚠️' }
+  da_fare:      { testo: 'Non lavorata',        emoji: '🔴', sigla: 'N' },
+  fatto:        { testo: 'Lavorata',             emoji: '✅', sigla: 'L' },
+  parziale:     { testo: 'Lavorata parziale',    emoji: '🟣', sigla: 'P' },
+  non_presente: { testo: 'Mezzo assente',        emoji: '⚠️', sigla: 'A' }
 };
 // etichetta con emoji, per l'interfaccia (badge/pulsanti)
 function statoLabel(s){
@@ -407,8 +423,11 @@ function render(){
         <div class="vtarga">${escapeHtml(e.targa || '(senza targa)')}</div>
         ${e.telaio ? `<div class="vmeta">Telaio: ${escapeHtml(e.telaio)}</div>` : ''}
         ${e.note ? `<div class="vnote">${escapeHtml(e.note)}</div>` : ''}
-        <div style="margin-top:6px;">
-          <span class="${statoBadgeClass(e.stato)}" data-cycle="${e.id}" title="Tocca per cambiare stato">${statoLabel(e.stato)}</span>
+        <div class="stato-corrente">${statoLabel(e.stato)}</div>
+        <div class="stato-squares">
+          ${Object.keys(STATI).map(s => `
+            <div class="stato-sq${e.stato===s?' active':''}" data-s="${s}" data-id="${e.id}" title="${STATI[s].testo}">${STATI[s].sigla}</div>
+          `).join('')}
         </div>
         <div class="vactions">
           <button class="btn-ghost btn-sm" data-del="${e.id}">🗑 Elimina</button>
@@ -423,14 +442,6 @@ function escapeHtml(s){
 }
 
 // ---------- Eventi form aggiunta ----------
-document.querySelectorAll('.status-form button').forEach(b=>{
-  b.addEventListener('click', ()=>{
-    document.querySelectorAll('.status-form button').forEach(x=>x.classList.remove('sel'));
-    b.classList.add('sel');
-    statoScelto = b.dataset.stato;
-  });
-});
-
 document.getElementById('fotoTargaInput').addEventListener('change', (e)=>{
   const f = e.target.files[0];
   if(!f) return;
@@ -479,6 +490,36 @@ document.getElementById('rimuoviFotoTelaioBtn').addEventListener('click', ()=>{
   document.getElementById('ocrTelaioStatus').textContent = '';
 });
 
+// foto di un elenco/foglio con più targhe: le riconosce tutte e crea una vettura per ciascuna
+document.getElementById('fotoElencoInput').addEventListener('change', (e)=>{
+  const f = e.target.files[0];
+  if(!f) return;
+  const statusEl = document.getElementById('ocrElencoStatus');
+  comprimiFoto(f, async (base64)=>{
+    const testo = await ocrImage(base64, statusEl);
+    document.getElementById('fotoElencoInput').value = '';
+    if(!testo){
+      statusEl.textContent = '⚠️ OCR non riuscito: aggiungi le vetture a mano.';
+      return;
+    }
+    const targhe = estraiTargheMultiple(testo);
+    if(targhe.length === 0){
+      statusEl.textContent = '⚠️ Nessuna targa riconosciuta nella foto. Riprova con più luce/a fuoco, o inserisci a mano.';
+      return;
+    }
+    const list = currentList();
+    targhe.forEach(targa=>{
+      list.entries.push({
+        id: uid(), targa, telaio:'', note:'', stato:'da_fare',
+        fotoTarga: null, fotoTelaio: null, ts: new Date().toISOString()
+      });
+    });
+    saveData(data);
+    statusEl.textContent = `✅ Aggiunte ${targhe.length} vetture: ${targhe.join(', ')}. Verifica e correggi eventuali errori di lettura.`;
+    render();
+  });
+});
+
 document.getElementById('aggiungiBtn').addEventListener('click', ()=>{
   const targa = document.getElementById('targaInput').value.trim().toUpperCase();
   const telaio = document.getElementById('telaioInput').value.trim();
@@ -489,7 +530,7 @@ document.getElementById('aggiungiBtn').addEventListener('click', ()=>{
   }
   const list = currentList();
   list.entries.push({
-    id: uid(), targa, telaio, note, stato: statoScelto,
+    id: uid(), targa, telaio, note, stato: 'da_fare',
     fotoTarga: fotoTargaBase64, fotoTelaio: fotoTelaioBase64, ts: new Date().toISOString()
   });
   saveData(data);
@@ -521,15 +562,15 @@ document.getElementById('clienteInput').addEventListener('change', ()=>{
 
 document.getElementById('dataGiorno').addEventListener('change', render);
 
-// cambio stato ciclico e cancellazione righe (delegation)
+// cambio stato diretto (quadratini) e cancellazione righe (delegation)
 document.getElementById('lista').addEventListener('click', (e)=>{
-  const cycleId = e.target.dataset.cycle;
+  const setId = e.target.dataset.id;
+  const setStato = e.target.dataset.s;
   const delId = e.target.dataset.del;
   const list = currentList();
-  if(cycleId){
-    const entry = list.entries.find(x=>x.id===cycleId);
-    const order = ['da_fare','fatto','parziale','non_presente'];
-    entry.stato = order[(order.indexOf(entry.stato)+1) % order.length];
+  if(setId && setStato){
+    const entry = list.entries.find(x=>x.id===setId);
+    entry.stato = setStato;
     saveData(data);
     render();
   }
